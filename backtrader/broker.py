@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -50,6 +50,8 @@ class BrokerBase(with_metaclass(MetaParams, object)):
         pass
 
     def getcommissioninfo(self, data):
+        '''Retrieves the ``CommissionInfo`` scheme associated with the given
+        ``data``'''
         if data._name in self.comminfo:
             return self.comminfo[data._name]
 
@@ -58,16 +60,28 @@ class BrokerBase(with_metaclass(MetaParams, object)):
     def setcommission(self,
                       commission=0.0, margin=None, mult=1.0,
                       commtype=None, percabs=True, stocklike=False,
-                      interest=0.0, interest_long=False,
+                      interest=0.0, interest_long=False, leverage=1.0,
+                      automargin=False,
                       name=None):
+
+        '''This method sets a `` CommissionInfo`` object for assets managed in
+        the broker with the parameters. Consult the reference for
+        ``CommInfoBase``
+
+        If name is ``None``, this will be the default for assets for which no
+        other ``CommissionInfo`` scheme can be found
+        '''
 
         comm = CommInfoBase(commission=commission, margin=margin, mult=mult,
                             commtype=commtype, stocklike=stocklike,
                             percabs=percabs,
-                            interest=interest, interest_long=interest_long)
+                            interest=interest, interest_long=interest_long,
+                            leverage=leverage, automargin=automargin)
         self.comminfo[name] = comm
 
     def addcommissioninfo(self, comminfo, name=None):
+        '''Adds a ``CommissionInfo`` object that will be the default for all assets if
+        ``name`` is ``None``'''
         self.comminfo[name] = comminfo
 
     def getcash(self):

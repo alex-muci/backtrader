@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -46,10 +46,12 @@ if PY2:
     map = itertools.imap
     range = xrange
     zip = itertools.izip
+    long = long
 
     cmp = cmp
 
     bytes = bytes
+    bstr = bytes
 
     from io import StringIO
 
@@ -89,10 +91,13 @@ else:
     map = map
     range = range
     zip = zip
+    long = int
 
     def cmp(a, b): return (a > b) - (a < b)
 
     def bytes(x): return x.encode('utf-8')
+
+    def bstr(x): return str(x)
 
     from io import StringIO
 

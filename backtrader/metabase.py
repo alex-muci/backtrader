@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -118,10 +118,21 @@ class AutoInfoClass(object):
         info2add = obasesinfo.copy()
         info2add.update(info)
 
-        # str for Python 2/3 compatibility
-        newcls = type(str(cls.__name__ + '_' + name), (cls,), {})
         clsmodule = sys.modules[cls.__module__]
-        setattr(clsmodule, str(cls.__name__ + '_' + name), newcls)
+        newclsname = str(cls.__name__ + '_' + name)  # str - Python 2/3 compat
+
+        # This loop makes sure that if the name has already been defined, a new
+        # unique name is found. A collision example is in the plotlines names
+        # definitions of bt.indicators.MACD and bt.talib.MACD. Both end up
+        # definining a MACD_pl_macd and this makes it impossible for the pickle
+        # module to send results over a multiprocessing channel
+        namecounter = 1
+        while hasattr(clsmodule, newclsname):
+            newclsname += str(namecounter)
+            namecounter += 1
+
+        newcls = type(newclsname, (cls,), {})
+        setattr(clsmodule, newclsname, newcls)
 
         setattr(newcls, '_getpairsbase',
                 classmethod(lambda cls: baseinfo.copy()))

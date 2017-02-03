@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -23,26 +23,27 @@ from __future__ import (absolute_import, division, print_function,
 
 import bisect
 import collections
-
+import itertools
 import math
+import operator
+import sys
 
-from ..utils.py3 import range, with_metaclass
-
+import matplotlib
+import numpy as np  # guaranteed by matplotlib
 import matplotlib.dates as mdates
 import matplotlib.font_manager as mfontmgr
 import matplotlib.legend as mlegend
-import matplotlib.pyplot as mpyplot
 import matplotlib.ticker as mticker
 
-from ..utils import OrderedDict
-
+from ..utils.py3 import range, with_metaclass
 from .. import AutoInfoClass, MetaParams, TimeFrame
 
 from .finance import plot_candlestick, plot_ohlc, plot_volume, plot_lineonclose
 from .formatters import (MyVolFormatter, MyDateFormatter, getlocator)
+from . import locator as loc
+from .multicursor import MultiCursor
 from .scheme import PlotScheme
 from .utils import tag_box_style
-from .multicursor import MultiCursor
 
 
 class PInfo(object):
@@ -56,18 +57,20 @@ class PInfo(object):
         self.sharex = None
         self.figs = list()
         self.cursors = list()
-        self.daxis = OrderedDict()
-        self.ldaxis = list()
+        self.daxis = collections.OrderedDict()
+        self.vaxis = list()
         self.zorder = dict()
         self.coloridx = collections.defaultdict(lambda: -1)
+        self.handles = collections.defaultdict(list)
+        self.labels = collections.defaultdict(list)
 
         self.prop = mfontmgr.FontProperties(size=self.sch.subtxtsize)
 
-    def newfig(self, numfig):
-        fig = mpyplot.figure(numfig)
+    def newfig(self, figid, numfig, mpyplot):
+        fig = mpyplot.figure(figid + numfig)
         self.figs.append(fig)
-        self.daxis = OrderedDict()
-        self.ldaxis.append(self.daxis)
+        self.daxis = collections.OrderedDict()
+        self.vaxis = list()
         self.row = 0
         self.sharex = None
         return fig
@@ -89,7 +92,7 @@ class PInfo(object):
         return self.zorder[ax]
 
 
-class Plot(with_metaclass(MetaParams, object)):
+class Plot_OldSync(with_metaclass(MetaParams, object)):
     params = (('scheme', PlotScheme()),)
 
     def __init__(self, **kwargs):
@@ -108,12 +111,21 @@ class Plot(with_metaclass(MetaParams, object)):
                       zorder=self.pinf.zorder[ax] + 3.0,
                       **kwargs)
 
-    def plot(self, strategy, numfigs=1):
+    def plot(self, strategy, figid=0, numfigs=1, iplot=True, useplotly=False):
+        # pfillers={}):
         if not strategy.datas:
             return
 
         if not len(strategy):
             return
+
+        if iplot:
+            if 'ipykernel' in sys.modules:
+                matplotlib.use('nbagg')
+
+        # this import must not happen before matplotlib.use
+        import matplotlib.pyplot as mpyplot
+        self.mpyplot = mpyplot
 
         self.pinf = PInfo(self.p.scheme)
         self.sortdataindicators(strategy)
@@ -130,29 +142,52 @@ class Plot(with_metaclass(MetaParams, object)):
 
             pranges.append([a, b, d])
 
+        figs = []
+
         for numfig in range(numfigs):
             # prepare a figure
-            fig = self.pinf.newfig(numfig)
+            fig = self.pinf.newfig(figid, numfig, self.mpyplot)
+            figs.append(fig)
 
             self.pinf.pstart, self.pinf.pend, self.pinf.psize = pranges[numfig]
             self.pinf.xstart = self.pinf.pstart
             self.pinf.xend = self.pinf.pend
 
-            self.pinf.clock = strategy._clock
-            self.pinf.xreal = strategy._clock.datetime.plot(
+            self.pinf.clock = strategy
+            self.pinf.xreal = self.pinf.clock.datetime.plot(
                 self.pinf.pstart, self.pinf.psize)
             self.pinf.xlen = len(self.pinf.xreal)
             self.pinf.x = list(range(self.pinf.xlen))
+            # self.pinf.pfillers = {None: []}
+            # for key, val in pfillers.items():
+            #     pfstart = bisect.bisect_left(val, self.pinf.pstart)
+            #     pfend = bisect.bisect_right(val, self.pinf.pend)
+            #     self.pinf.pfillers[key] = val[pfstart:pfend]
 
             # Do the plotting
             # Things that go always at the top (observers)
+            self.pinf.xdata = self.pinf.x
             for ptop in self.dplotstop:
-                self.plotind(ptop, subinds=self.dplotsover[ptop])
+                self.plotind(None, ptop, subinds=self.dplotsover[ptop])
 
             # Create the rest on a per data basis
+            dt0, dt1 = self.pinf.xreal[0], self.pinf.xreal[-1]
             for data in strategy.datas:
+                if not data.plotinfo.plot:
+                    continue
+
+                self.pinf.xdata = self.pinf.x
+                if len(data) < self.pinf.xlen:
+                    self.pinf.xdata = xdata = []
+                    xreal = self.pinf.xreal
+                    dts = data.datetime.plot()
+                    for dt in (x for x in dts if dt0 <= x <= dt1):
+                        dtidx = bisect.bisect_left(xreal, dt)
+                        xdata.append(dtidx)
+
                 for ind in self.dplotsup[data]:
                     self.plotind(
+                        data,
                         ind,
                         subinds=self.dplotsover[ind],
                         upinds=self.dplotsup[ind],
@@ -162,6 +197,7 @@ class Plot(with_metaclass(MetaParams, object)):
 
                 for ind in self.dplotsdown[data]:
                     self.plotind(
+                        data,
                         ind,
                         subinds=self.dplotsover[ind],
                         upinds=self.dplotsup[ind],
@@ -177,93 +213,76 @@ class Plot(with_metaclass(MetaParams, object)):
 
             self.pinf.cursors.append(cursor)
 
-            lastax = list(self.pinf.daxis.values())[-1]
-            # Date formatting for the x axis - only the last one needs it
-            if False:
-                locator = mticker.AutoLocator()
-                lastax.xaxis.set_major_locator(locator)
-                # lastax.xaxis.set_major_formatter(MyDateFormatter(self.pinf.xreal))
-                formatter = mdates.IndexDateFormatter(self.pinf.xreal,
-                                                      fmt='%Y-%m-%d')
-                lastax.xaxis.set_major_formatter(formatter)
-            else:
-                self.setlocators(strategy._clock)
-
             # Put the subplots as indicated by hspace
             fig.subplots_adjust(hspace=self.pinf.sch.plotdist,
                                 top=0.98, left=0.05, bottom=0.05, right=0.95)
+
+            laxis = list(self.pinf.daxis.values())
+
+            # Find last axis which is not a twinx (date locator fails there)
+            i = -1
+            while True:
+                lastax = laxis[i]
+                if lastax not in self.pinf.vaxis:
+                    break
+
+                i -= 1
+
+            self.setlocators(lastax)  # place the locators/fmts
 
             # Applying fig.autofmt_xdate if the data axis is the last one
             # breaks the presentation of the date labels. why?
             # Applying the manual rotation with setp cures the problem
             # but the labels from all axis but the last have to be hidden
-            if False:
-                fig.autofmt_xdate(bottom=0.25, rotation=0)
-            elif True:
-                for ax in self.pinf.daxis.values():
-                    mpyplot.setp(ax.get_xticklabels(), visible=False)
-                    # ax.autoscale_view(tight=True)
-                mpyplot.setp(lastax.get_xticklabels(),
-                             visible=True,
-                             rotation=self.pinf.sch.tickrotation)
+            for ax in laxis:
+                self.mpyplot.setp(ax.get_xticklabels(), visible=False)
+
+            self.mpyplot.setp(lastax.get_xticklabels(), visible=True,
+                              rotation=self.pinf.sch.tickrotation)
 
             # Things must be tight along the x axis (to fill both ends)
             axtight = 'x' if not self.pinf.sch.ytight else 'both'
-            mpyplot.autoscale(enable=True, axis=axtight, tight=True)
+            self.mpyplot.autoscale(enable=True, axis=axtight, tight=True)
 
-    def setlocators(self, data):
-        ax = list(self.pinf.daxis.values())[-1]
+        return figs
 
-        comp = getattr(data, '_compression', 1)
-        tframe = getattr(data, '_timeframe', TimeFrame.Days)
+    def setlocators(self, ax):
+        comp = getattr(self.pinf.clock, '_compression', 1)
+        tframe = getattr(self.pinf.clock, '_timeframe', TimeFrame.Days)
 
-        if tframe == TimeFrame.Years:
-            fmtmajor = '%Y'
-            fmtminor = '%Y'
-            fmtdata = '%Y'
-        elif tframe == TimeFrame.Months:
-            fmtmajor = '%Y'
-            fmtminor = '%b'
-            fmtdata = '%Y-%m'
-        elif tframe == TimeFrame.Weeks:
-            fmtmajor = '%b'
-            fmtminor = '%d'
-            fmtdata = '%Y-%m-%d'
-        elif tframe == TimeFrame.Days:
-            fmtmajor = '%b'
-            fmtminor = '%d'
-            fmtdata = '%Y-%m-%d'
-        elif tframe == TimeFrame.Minutes:
-            fmtmajor = '%H:%M'
-            fmtminor = '%H:%M'
-            fmtdata = '%Y-%m-%d %H:%M'
-        elif tframe == TimeFrame.Seconds:
-            fmtmajor = '%M:%S'
-            fmtminor = '%M:%S'
-            fmtdata = '%M:%S'
-        elif tframe == TimeFrame.MicroSeconds:
-            fmtmajor = '%M:%S'
-            fmtminor = '%S.%f'
-            fmtdata = '%M:%S.%f'
-        elif tframe == TimeFrame.Ticks:
-            fmtmajor = '%M:%S'
-            fmtminor = '%S.%f'
-            fmtdata = '%M:%S.%f'
+        if self.pinf.sch.fmt_x_data is None:
+            if tframe == TimeFrame.Years:
+                fmtdata = '%Y'
+            elif tframe == TimeFrame.Months:
+                fmtdata = '%Y-%m'
+            elif tframe == TimeFrame.Weeks:
+                fmtdata = '%Y-%m-%d'
+            elif tframe == TimeFrame.Days:
+                fmtdata = '%Y-%m-%d'
+            elif tframe == TimeFrame.Minutes:
+                fmtdata = '%Y-%m-%d %H:%M'
+            elif tframe == TimeFrame.Seconds:
+                fmtdata = '%Y-%m-%d %H:%M:%S'
+            elif tframe == TimeFrame.MicroSeconds:
+                fmtdata = '%Y-%m-%d %H:%M:%S.%f'
+            elif tframe == TimeFrame.Ticks:
+                fmtdata = '%Y-%m-%d %H:%M:%S.%f'
+        else:
+            fmtdata = self.pinf.sch.fmt_x_data
 
         fordata = MyDateFormatter(self.pinf.xreal, fmt=fmtdata)
         for dax in self.pinf.daxis.values():
             dax.fmt_xdata = fordata
 
-        locmajor = mticker.AutoLocator()
-        locminor = mticker.AutoMinorLocator()
-
-        ax.xaxis.set_minor_locator(locminor)
+        # Major locator / formatter
+        locmajor = loc.AutoDateLocator(self.pinf.xreal)
         ax.xaxis.set_major_locator(locmajor)
-
-        formajor = MyDateFormatter(self.pinf.xreal, fmt=fmtmajor)
-        forminor = MyDateFormatter(self.pinf.xreal, fmt=fmtminor)
-        ax.xaxis.set_major_formatter(formajor)
-        ax.xaxis.set_minor_formatter(forminor)
+        if self.pinf.sch.fmt_x_ticks is None:
+            autofmt = loc.AutoDateFormatter(self.pinf.xreal, locmajor)
+        else:
+            autofmt = MyDateFormatter(self.pinf.xreal,
+                                      fmt=self.pinf.sch.fmt_x_ticks)
+        ax.xaxis.set_major_formatter(autofmt)
 
     def calcrows(self, strategy):
         # Calculate the total number of rows
@@ -271,10 +290,30 @@ class Plot(with_metaclass(MetaParams, object)):
         rowsminor = self.pinf.sch.rowsminor
         nrows = 0
 
-        # Datas and volumes
-        nrows += len(strategy.datas) * rowsmajor
-        if self.pinf.sch.volume and not self.pinf.sch.voloverlay:
-            nrows += len(strategy.datas) * rowsminor
+        datasnoplot = 0
+        for data in strategy.datas:
+            if not data.plotinfo.plot:
+                # neither data nor indicators nor volume add rows
+                datasnoplot += 1
+                self.dplotsup.pop(data, None)
+                self.dplotsdown.pop(data, None)
+                self.dplotsover.pop(data, None)
+
+            elif data.plotinfo.plotmaster is not None:
+                # data doesn't add a row, but volume may
+                if self.pinf.sch.volume:
+                    nrows += rowsminor
+            else:
+                # data adds rows, volume may
+                nrows += rowsmajor
+                if self.pinf.sch.volume and not self.pinf.sch.voloverlay:
+                    nrows += rowsminor
+
+        if False:
+            # Datas and volumes
+            nrows += (len(strategy.datas) - datasnoplot) * rowsmajor
+            if self.pinf.sch.volume and not self.pinf.sch.voloverlay:
+                nrows += (len(strategy.datas) - datasnoplot) * rowsminor
 
         # top indicators/observers
         nrows += len(self.dplotstop) * rowsminor
@@ -286,8 +325,9 @@ class Plot(with_metaclass(MetaParams, object)):
         self.pinf.nrows = nrows
 
     def newaxis(self, obj, rowspan):
-        ax = mpyplot.subplot2grid((self.pinf.nrows, 1), (self.pinf.row, 0),
-                                  rowspan=rowspan, sharex=self.pinf.sharex)
+        ax = self.mpyplot.subplot2grid(
+            (self.pinf.nrows, 1), (self.pinf.row, 0),
+            rowspan=rowspan, sharex=self.pinf.sharex)
 
         # update the sharex information if not available
         if self.pinf.sharex is None:
@@ -305,7 +345,7 @@ class Plot(with_metaclass(MetaParams, object)):
 
         return ax
 
-    def plotind(self, ind,
+    def plotind(self, iref, ind,
                 subinds=None, upinds=None, downinds=None,
                 masterax=None):
 
@@ -318,7 +358,7 @@ class Plot(with_metaclass(MetaParams, object)):
 
         # plot subindicators on self with independent axis above
         for upind in upinds:
-            self.plotind(upind)
+            self.plotind(iref, upind)
 
         # Get an axis for this plot
         ax = masterax or self.newaxis(ind, rowspan=self.pinf.sch.rowsminor)
@@ -343,7 +383,8 @@ class Plot(with_metaclass(MetaParams, object)):
             if masterax and not ind.plotinfo.plotlinelabels:
                 label = indlabel * (lineidx == 0) or '_nolegend'
             else:
-                label = lineplotinfo._get('_name', '') or linealias
+                label = (indlabel + '\n') * (lineidx == 0)
+                label += lineplotinfo._get('_name', '') or linealias
 
             # plot data
             lplot = line.plotrange(self.pinf.xstart, self.pinf.xend)
@@ -365,20 +406,8 @@ class Plot(with_metaclass(MetaParams, object)):
             if ax in self.pinf.zorder:
                 plotkwargs['zorder'] = self.pinf.zordernext(ax)
 
-            if ind.plotinfo.plotmaster is not None:
-                clk = getattr(ind._clock, 'owner', ind._clock)
-                mlens = getattr(clk, 'mlen', None)
-                newlplot = list()
-                if mlens:
-                    prevmlen = 0
-                    for i, mlen in enumerate(mlens):
-                        newlplot.extend([lplot[i]] * (mlen + 1 - prevmlen))
-                        prevmlen = mlen + 1
-
-                    lplot = newlplot
-
             pltmethod = getattr(ax, lineplotinfo._get('_method', 'plot'))
-            plottedline = pltmethod(self.pinf.x, lplot, **plotkwargs)
+            plottedline = pltmethod(self.pinf.xdata, lplot, **plotkwargs)
             try:
                 plottedline = plottedline[0]
             except:
@@ -393,9 +422,29 @@ class Plot(with_metaclass(MetaParams, object)):
                              facecolor='white',
                              edgecolor=self.pinf.color(ax))
 
+            farts = (('_gt', operator.gt), ('_lt', operator.lt), ('', None),)
+            for fcmp, fop in farts:
+                fattr = '_fill' + fcmp
+                fref, fcol = lineplotinfo._get(fattr, (None, None))
+                if fref is not None:
+                    y1 = np.array(lplot)
+                    l2 = getattr(ind, fref)
+                    prl2 = l2.plotrange(self.pinf.xstart, self.pinf.xend)
+                    y2 = np.array(prl2)
+                    kwargs = dict()
+                    if fop is not None:
+                        kwargs['where'] = fop(y1, y2)
+
+                    ax.fill_between(self.pinf.xdata, y1, y2,
+                                    facecolor=fcol,
+                                    alpha=0.20,
+                                    interpolate=True,
+                                    **kwargs)
+
         # plot subindicators that were created on self
         for subind in subinds:
-            self.plotind(subind, subinds=self.dplotsover[subind], masterax=ax)
+            self.plotind(iref, subind, subinds=self.dplotsover[subind],
+                         masterax=ax)
 
         if not masterax:
             # adjust margin if requested ... general of particular
@@ -436,40 +485,47 @@ class Plot(with_metaclass(MetaParams, object)):
                                        shadow=False, fancybox=False,
                                        prop=self.pinf.prop)
 
-                    legend.set_title(indlabel, prop=self.pinf.prop)
+                    # legend.set_title(indlabel, prop=self.pinf.prop)
                     # hack: if title is set. legend has a Vbox for the labels
                     # which has a default "center" set
                     legend._legend_box.align = 'left'
 
         # plot subindicators on self with independent axis below
         for downind in downinds:
-            self.plotind(downind)
+            self.plotind(iref, downind)
 
     def plotvolume(self, data, opens, highs, lows, closes, volumes, label):
-        if self.pinf.sch.voloverlay:
+        voloverlay = (self.pinf.sch.voloverlay and
+                      data.plotinfo.plotmaster is None)
+
+        # if sefl.pinf.sch.voloverlay:
+        if voloverlay:
             rowspan = self.pinf.sch.rowsmajor
         else:
             rowspan = self.pinf.sch.rowsminor
 
         ax = self.newaxis(data.volume, rowspan=rowspan)
 
-        if self.pinf.sch.voloverlay:
+        # if self.pinf.sch.voloverlay:
+        if voloverlay:
             volalpha = self.pinf.sch.voltrans
         else:
             volalpha = 1.0
 
         maxvol = volylim = max(volumes)
         if maxvol:
+
             # Plot the volume (no matter if as overlay or standalone)
             vollabel = label
-            volplot, = plot_volume(ax, self.pinf.x, opens, closes, volumes,
+            volplot, = plot_volume(ax, self.pinf.xdata, opens, closes, volumes,
                                    colorup=self.pinf.sch.volup,
                                    colordown=self.pinf.sch.voldown,
                                    alpha=volalpha, label=vollabel)
 
             nbins = 6
             prune = 'both'
-            if self.pinf.sch.voloverlay:
+            # if self.pinf.sch.voloverlay:
+            if voloverlay:
                 # store for a potential plot over it
                 nbins = int(nbins / self.pinf.sch.volscaling)
                 prune = None
@@ -496,35 +552,14 @@ class Plot(with_metaclass(MetaParams, object)):
 
         return volplot
 
-    def setxdata(self, data):
-        # only if this data has a master, do something
-        if data.mlen:
-            # this data has a master, get the real length of this data
-            self.pinf.xlen = len(data.mlen)
-            # find the starting point with regards to master start: pstart
-            self.pinf.xstart = bisect.bisect_left(
-                data.mlen, self.pinf.pstart)
-
-            # find the ending point with regards to master start: pend
-            self.pinf.xend = bisect.bisect_right(
-                data.mlen, self.pinf.pend)
-
-            # extract the Xs from the subdata
-            self.pinf.x = data.mlen[self.pinf.xstart:self.pinf.xend]
-            # rebase the Xs to the start of the main data point
-            self.pinf.x = [x - self.pinf.pstart for x in self.pinf.x]
-
     def plotdata(self, data, indicators):
         for ind in indicators:
             upinds = self.dplotsup[ind]
             for upind in upinds:
-                self.plotind(upind,
+                self.plotind(data, upind,
                              subinds=self.dplotsover[upind],
                              upinds=self.dplotsup[upind],
                              downinds=self.dplotsdown[upind])
-
-        # set the x axis data (if needed)
-        self.setxdata(data)
 
         opens = data.open.plotrange(self.pinf.xstart, self.pinf.xend)
         highs = data.high.plotrange(self.pinf.xstart, self.pinf.xend)
@@ -533,14 +568,28 @@ class Plot(with_metaclass(MetaParams, object)):
         volumes = data.volume.plotrange(self.pinf.xstart, self.pinf.xend)
 
         vollabel = 'Volume'
-        if self.pinf.sch.volume and self.pinf.sch.voloverlay:
+        voloverlay = (self.pinf.sch.voloverlay and
+                      data.plotinfo.plotmaster is None)
+
+        if not voloverlay:
+            vollabel += ' ({})'.format(data._dataname)
+
+        # if self.pinf.sch.volume and self.pinf.sch.voloverlay:
+        axdatamaster = None
+        if self.pinf.sch.volume and voloverlay:
             volplot = self.plotvolume(
                 data, opens, highs, lows, closes, volumes, vollabel)
             axvol = self.pinf.daxis[data.volume]
             ax = axvol.twinx()
             self.pinf.daxis[data] = ax
+            self.pinf.vaxis.append(ax)
         else:
-            ax = self.newaxis(data, rowspan=self.pinf.sch.rowsmajor)
+            if data.plotinfo.plotmaster is None:
+                ax = self.newaxis(data, rowspan=self.pinf.sch.rowsmajor)
+            else:
+                axdatamaster = self.pinf.daxis[data.plotinfo.plotmaster]
+                ax = axdatamaster.twinx()
+                self.pinf.vaxis.append(ax)
 
         datalabel = ''
         dataname = ''
@@ -556,21 +605,29 @@ class Plot(with_metaclass(MetaParams, object)):
                      (opens[-1], highs[-1], lows[-1], closes[-1])
 
         if self.pinf.sch.style.startswith('line'):
+            if axdatamaster is None:
+                color = self.pinf.sch.loc
+            else:
+                self.pinf.nextcolor(axdatamaster)
+                color = self.pinf.color(axdatamaster)
+
             plotted = plot_lineonclose(
-                ax, self.pinf.x, closes,
-                color=self.pinf.sch.loc, label=datalabel)
+                ax, self.pinf.xdata, closes,
+                color=color, label=datalabel)
         else:
             if self.pinf.sch.style.startswith('candle'):
                 plotted = plot_candlestick(
-                    ax, self.pinf.x, opens, highs, lows, closes,
+                    ax, self.pinf.xdata, opens, highs, lows, closes,
                     colorup=self.pinf.sch.barup,
                     colordown=self.pinf.sch.bardown,
-                    label=datalabel)
+                    label=datalabel,
+                    fillup=self.pinf.sch.barupfill,
+                    filldown=self.pinf.sch.bardownfill)
 
             elif self.pinf.sch.style.startswith('bar') or True:
                 # final default option -- should be "else"
                 plotted = plot_ohlc(
-                    ax, self.pinf.x, opens, highs, lows, closes,
+                    ax, self.pinf.xdata, opens, highs, lows, closes,
                     colorup=self.pinf.sch.barup,
                     colordown=self.pinf.sch.bardown,
                     label=datalabel)
@@ -586,7 +643,8 @@ class Plot(with_metaclass(MetaParams, object)):
         ax.set_ylim(ax.get_ylim())
 
         if self.pinf.sch.volume:
-            if not self.pinf.sch.voloverlay:
+            # if not self.pinf.sch.voloverlay:
+            if not voloverlay:
                 self.plotvolume(
                     data, opens, highs, lows, closes, volumes, vollabel)
             else:
@@ -598,14 +656,15 @@ class Plot(with_metaclass(MetaParams, object)):
                     ax.set_ylim(axbot, axtop)
 
         for ind in indicators:
-            self.plotind(ind, subinds=self.dplotsover[ind], masterax=ax)
+            self.plotind(data, ind, subinds=self.dplotsover[ind], masterax=ax)
 
         handles, labels = ax.get_legend_handles_labels()
         if handles:
             # put data and volume legend entries in the 1st positions
             # because they are "collections" they are considered after Line2D
             # for the legend entries, which is not our desire
-            if self.pinf.sch.volume and self.pinf.sch.voloverlay:
+            # if self.pinf.sch.volume and self.pinf.sch.voloverlay:
+            if self.pinf.sch.volume and voloverlay:
                 if volplot:
                     # even if volume plot was requested, there may be no volume
                     labels.insert(0, vollabel)
@@ -615,11 +674,22 @@ class Plot(with_metaclass(MetaParams, object)):
             labels.insert(0, labels.pop(didx))
             handles.insert(0, handles.pop(didx))
 
-            # feed handles/labels to legend to get right order
-            legend = ax.legend(handles, labels,
-                               loc='upper left', frameon=False, shadow=False,
-                               fancybox=False,
-                               prop=self.pinf.prop, numpoints=1, ncol=1)
+            if axdatamaster is None:
+                self.pinf.handles[ax] = handles
+                self.pinf.labels[ax] = labels
+            else:
+                self.pinf.handles[axdatamaster].extend(handles)
+                self.pinf.labels[axdatamaster].extend(labels)
+
+            h = self.pinf.handles[axdatamaster or ax]
+            l = self.pinf.labels[axdatamaster or ax]
+
+            axlegend = axdatamaster or ax
+            legend = axlegend.legend(h, l,
+                                     loc='upper left',
+                                     frameon=False, shadow=False,
+                                     fancybox=False, prop=self.pinf.prop,
+                                     numpoints=1, ncol=1)
 
             # hack: if title is set. legend has a Vbox for the labels
             # which has a default "center" set
@@ -628,13 +698,13 @@ class Plot(with_metaclass(MetaParams, object)):
         for ind in indicators:
             downinds = self.dplotsdown[ind]
             for downind in downinds:
-                self.plotind(downind,
+                self.plotind(data, downind,
                              subinds=self.dplotsover[downind],
                              upinds=self.dplotsup[downind],
                              downinds=self.dplotsdown[downind])
 
     def show(self):
-        mpyplot.show()
+        self.mpyplot.show()
 
     def sortdataindicators(self, strategy):
         # These lists/dictionaries hold the subplots that go above each data
@@ -689,3 +759,6 @@ class Plot(with_metaclass(MetaParams, object)):
                     self.dplotsdown[key].append(x)
             else:
                 self.dplotsover[key].append(x)
+
+
+Plot = Plot_OldSync

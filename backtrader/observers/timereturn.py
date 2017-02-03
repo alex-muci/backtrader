@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -51,6 +51,7 @@ class TimeReturn(Observer):
     by looking at the *lines* by name at index ``0``.
 
     '''
+    _stclock = True
 
     lines = ('timereturn',)
     plotinfo = dict(plot=True, subplot=True)
@@ -63,8 +64,10 @@ class TimeReturn(Observer):
 
     def _plotlabel(self):
         return [
-            TimeFrame.getname(self.p.timeframe, self.p.compression),
-            str(self.p.compression or 1)
+            # Use the final tf/comp values calculated by the return analyzer
+            TimeFrame.getname(self.treturn.timeframe,
+                              self.treturn.compression),
+            str(self.treturn.compression)
         ]
 
     def __init__(self):

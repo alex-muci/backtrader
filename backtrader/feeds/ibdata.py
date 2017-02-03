@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015,2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -23,6 +23,7 @@ from __future__ import (absolute_import, division, print_function,
 
 import datetime
 
+import backtrader as bt
 from backtrader.feed import DataBase
 from backtrader import TimeFrame, date2num, num2date
 from backtrader.utils.py3 import (integer_types, queue, string_types,
@@ -334,6 +335,7 @@ class IBData(with_metaclass(MetaIBData, DataBase)):
 
         if self.p.backfill_from is not None:
             self._state = self._ST_FROM
+            self.p.backfill_from._start()
         else:
             self._state = self._ST_START  # initial state for _load
         self._statelivereconn = False  # if reconnecting in live state
@@ -355,6 +357,7 @@ class IBData(with_metaclass(MetaIBData, DataBase)):
             return
 
         if self._state == self._ST_START:
+            self._start_finish()  # to finish initialization
             self._st_start()
 
     def stop(self):
@@ -384,6 +387,9 @@ class IBData(with_metaclass(MetaIBData, DataBase)):
         else:
             self.ib.cancelRealTimeBars(self.qlive)
 
+    def haslivedata(self):
+        return bool(self._storedmsg or self.qlive)
+
     def _load(self):
         if self.contract is None or self._state == self._ST_OVER:
             return False  # nothing can be done
@@ -392,9 +398,36 @@ class IBData(with_metaclass(MetaIBData, DataBase)):
             if self._state == self._ST_LIVE:
                 try:
                     msg = (self._storedmsg.pop(None, None) or
-                           self.qlive.get(timeout=self.p.qcheck))
+                           self.qlive.get(timeout=self._qcheck))
                 except queue.Empty:
-                    return None  # indicate timeout situation
+                    if True:
+                        return None
+
+                    # Code invalidated until further checking is done
+                    if not self._statelivereconn:
+                        return None  # indicate timeout situation
+
+                    # Awaiting data and nothing came in - fake it up until now
+                    dtend = self.num2date(date2num(datetime.datetime.utcnow()))
+                    dtbegin = None
+                    if len(self) > 1:
+                        dtbegin = self.num2date(self.datetime[-1])
+
+                    self.qhist = self.ib.reqHistoricalDataEx(
+                        contract=self.contract,
+                        enddate=dtend, begindate=dtbegin,
+                        timeframe=self._timeframe,
+                        compression=self._compression,
+                        what=self.p.what, useRTH=self.p.useRTH, tz=self._tz,
+                        sessionend=self.p.sessionend)
+
+                    if self._laststatus != self.DELAYED:
+                        self.put_notification(self.DELAYED)
+
+                    self._state = self._ST_HISTORBACK
+
+                    self._statelivereconn = False
+                    continue  # to reenter the loop and hit st_historback
 
                 if msg is None:  # Conn broken during historical/backfilling
                     self.put_notification(self.CONNBROKEN)
@@ -461,7 +494,8 @@ class IBData(with_metaclass(MetaIBData, DataBase)):
                 dtend = None
                 if len(self) > 1:
                     # len == 1 ... forwarded for the 1st time
-                    dtbegin = self.datetime.datetime(-1)
+                    # get begin date in utc-like format like msg.datetime
+                    dtbegin = num2date(self.datetime[-1])
                 elif self.fromdate > float('-inf'):
                     dtbegin = num2date(self.fromdate)
                 else:  # 1st bar and no begin set
@@ -471,10 +505,10 @@ class IBData(with_metaclass(MetaIBData, DataBase)):
                 dtend = msg.datetime if self._usertvol else msg.time
 
                 self.qhist = self.ib.reqHistoricalDataEx(
-                    self.contract, dtend, dtbegin,
-                    self._timeframe, self._compression,
-                    what=self.p.what,
-                    useRTH=self.p.useRTH)
+                    contract=self.contract, enddate=dtend, begindate=dtbegin,
+                    timeframe=self._timeframe, compression=self._compression,
+                    what=self.p.what, useRTH=self.p.useRTH, tz=self._tz,
+                    sessionend=self.p.sessionend)
 
                 self._state = self._ST_HISTORBACK
                 self._statelivereconn = False  # no longer in live
@@ -524,7 +558,7 @@ class IBData(with_metaclass(MetaIBData, DataBase)):
                     continue
 
                 # copy lines of the same name
-                for alias in self.lines.getaliases():
+                for alias in self.lines.getlinealiases():
                     lsrc = getattr(self.p.backfill_from.lines, alias)
                     ldst = getattr(self.lines, alias)
 
@@ -548,9 +582,10 @@ class IBData(with_metaclass(MetaIBData, DataBase)):
                 dtbegin = num2date(self.fromdate)
 
             self.qhist = self.ib.reqHistoricalDataEx(
-                self.contract, dtend, dtbegin,
-                self._timeframe, self._compression,
-                what=self.p.what, useRTH=self.p.useRTH)
+                contract=self.contract, enddate=dtend, begindate=dtbegin,
+                timeframe=self._timeframe, compression=self._compression,
+                what=self.p.what, useRTH=self.p.useRTH, tz=self._tz,
+                sessionend=self.p.sessionend)
 
             self._state = self._ST_HISTORBACK
             return True  # continue before

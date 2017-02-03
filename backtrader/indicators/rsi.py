@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -202,7 +202,7 @@ class RSI_Safe(RSI):
     params = (('safediv', True),)
 
 
-class RSI_SMA(Indicator):
+class RSI_SMA(RSI):
     '''
     Uses a SimpleMovingAverage as described in Wikipedia and other soures
 
@@ -214,7 +214,7 @@ class RSI_SMA(Indicator):
     params = (('movav', MovAv.Simple),)
 
 
-class RSI_EMA(Indicator):
+class RSI_EMA(RSI):
     '''
     Uses an ExponentialMovingAverage as described in Wikipedia
 

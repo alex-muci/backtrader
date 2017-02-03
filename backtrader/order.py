@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -125,7 +125,10 @@ class OrderData(object):
     # the len of the exbits can be queried with no concerns about another
     # thread making an append and with no need for a lock
 
-    def __init__(self, dt=None, size=0, price=0.0, pricelimit=0.0, remsize=0):
+    def __init__(self, dt=None, size=0, price=0.0, pricelimit=0.0, remsize=0,
+                 pclose=0.0):
+
+        self.pclose = pclose
         self.exbits = collections.deque()  # for historical purposes
         self.p1, self.p2 = 0, 0  # indices to pending notifications
 
@@ -292,19 +295,32 @@ class OrderBase(with_metaclass(MetaParams, object)):
         self.created = OrderData(dt=dcreated,
                                  size=self.size,
                                  price=price,
-                                 pricelimit=self.pricelimit)
+                                 pricelimit=self.pricelimit,
+                                 pclose=self.data.close[0])
 
         self.executed = OrderData(remsize=self.size)
         self.position = 0
 
-        if isinstance(self.valid, datetime.datetime):
+        if isinstance(self.valid, datetime.date):
             # comparison will later be done against the raw datetime[0] value
             self.valid = self.data.date2num(self.valid)
         elif isinstance(self.valid, datetime.timedelta):
             # offset with regards to now ... get utcnow + offset
             # when reading with date2num ... it will be automatically localized
-            valid = self.data.datetime.datetime() + self.valid
+            if self.valid == self.DAY:
+                valid = datetime.datetime.combine(
+                    self.data.datetime.date(), datetime.time(23, 59, 59, 9999))
+            else:
+                valid = self.data.datetime.datetime() + self.valid
+
             self.valid = self.data.date2num(valid)
+
+        elif self.valid is not None:
+            if not self.valid:  # avoid comparing None and 0
+                valid = datetime.datetime.combine(
+                    self.data.datetime.date(), datetime.time(23, 59, 59, 9999))
+            else:  # assume float
+                valid = self.data.datetime[0] + self.valid
 
         if not self.p.simulated:
             # provisional end-of-session

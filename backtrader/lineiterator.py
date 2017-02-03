@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -28,7 +28,7 @@ import sys
 from .utils.py3 import map, range, zip, with_metaclass, string_types
 
 from .lineroot import LineRoot, LineSingle
-from .linebuffer import LineActions
+from .linebuffer import LineActions, LineNum
 from .lineseries import LineSeries, LineSeriesMaker
 from .dataseries import DataSeries
 from . import metabase
@@ -39,14 +39,32 @@ class MetaLineIterator(LineSeries.__class__):
         _obj, args, kwargs = \
             super(MetaLineIterator, cls).donew(*args, **kwargs)
 
+        # Prepare to hold children that need to be calculated and
+        # influence minperiod - Moved here to support LineNum below
+        _obj._lineiterators = collections.defaultdict(list)
+
         # Scan args for datas ... if none are found,
         # use the _owner (to have a clock)
-        _obj.datas = \
-            [LineSeriesMaker(x) for x in args if isinstance(x, LineRoot)]
+        mindatas = _obj._mindatas
+        lastarg = 0
+        _obj.datas = []
+        for arg in args:
+            if isinstance(arg, LineRoot):
+                _obj.datas.append(LineSeriesMaker(arg))
 
-        # Remove the datas from the args ...
-        # already being given to the line iterator
-        newargs = [x for x in args if not isinstance(x, LineRoot)]
+            elif not mindatas:
+                break  # found not data and must not be collected
+            else:
+                try:
+                    _obj.datas.append(LineSeriesMaker(LineNum(arg)))
+                except:
+                    # Not a LineNum and is not a LineSeries - bail out
+                    break
+
+            mindatas = max(0, mindatas - 1)
+            lastarg += 1
+
+        newargs = args[lastarg:]
 
         # If no datas have been passed to an indicator ... use the
         # main data of the owner, easing up adding "self.data" ...
@@ -98,10 +116,6 @@ class MetaLineIterator(LineSeries.__class__):
         for line in _obj.lines:
             line.addminperiod(_obj._minperiod)
 
-        # Prepare to hold children that need to be calculated and
-        # influence minperiod
-        _obj._lineiterators = collections.defaultdict(list)
-
         return _obj, args, kwargs
 
     def dopostinit(cls, _obj, *args, **kwargs):
@@ -123,6 +137,7 @@ class MetaLineIterator(LineSeries.__class__):
 
 
 class LineIterator(with_metaclass(MetaLineIterator, LineSeries)):
+    _mindatas = 1
     _ltype = LineSeries.IndType
 
     plotinfo = dict(plot=True,
@@ -218,9 +233,7 @@ class LineIterator(with_metaclass(MetaLineIterator, LineSeries)):
     bind2line = bind2lines
 
     def _next(self):
-        clock_len = len(self._clock)
-        if clock_len != len(self):
-            self.forward()
+        clock_len = self._clk_update()
 
         for indicator in self._lineiterators[LineIterator.IndType]:
             indicator._next()
@@ -246,6 +259,13 @@ class LineIterator(with_metaclass(MetaLineIterator, LineSeries)):
                 self.nextstart()  # only called for the 1st value
             elif clock_len:
                 self.prenext()
+
+    def _clk_update(self):
+        clock_len = len(self._clock)
+        if clock_len != len(self):
+            self.forward()
+
+        return clock_len
 
     def _once(self):
         self.forward(size=self._clock.buflen())
@@ -423,7 +443,21 @@ def LinesCoupler(cdata, clock=None, **kwargs):
     obj = ncls(cdata, **kwargs)  # instantiate
     # The clock is set here to avoid it being interpreted as a data by the
     # LineIterator background scanning code
-    obj._clock = clock or obj._owner
+    if clock is None:
+        clock = getattr(cdata, '_clock', None)
+        if clock is not None:
+            nclock = getattr(clock, '_clock', None)
+            if nclock is not None:
+                clock = nclock
+            else:
+                nclock = getattr(clock, 'data', None)
+                if nclock is not None:
+                    clock = nclock
+
+        if clock is None:
+            clock = obj._owner
+
+    obj._clock = clock
     return obj
 
 

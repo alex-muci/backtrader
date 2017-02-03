@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -103,7 +103,8 @@ class ReduceN(OperationN):
     Calculates the Reduced value of the ``period`` data points applying
     ``function``
 
-    Uses the built-in ``min`` for the calculation
+    Uses the built-in ``reduce`` for the calculation plus the ``func`` that
+    subclassess define
 
     Formula:
       - reduced = reduce(function(data, period)), initializer=initializer)
@@ -163,7 +164,7 @@ class AllN(OperationN):
     Uses the built-in ``all`` for the calculation
 
     Formula:
-      - anyn = any(data, period)
+      - alln = all(data, period)
     '''
     lines = ('alln',)
     func = all

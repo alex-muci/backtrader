@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -411,7 +411,10 @@ class MetaLineSeries(LineMultiple.__class__):
 
 
 class LineSeries(with_metaclass(MetaLineSeries, LineMultiple)):
-    plotinfo = dict()
+    plotinfo = dict(
+        plot=True,
+        plotmaster=None
+    )
 
     csv = True
 

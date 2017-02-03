@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -97,9 +97,6 @@ class MetaAbstractDataBase(dataseries.OHLCDateTime.__class__):
                 _obj.p.todate = datetime.datetime.combine(
                     _obj.p.todate, _obj.p.sessionend)
 
-        # hold datamaster points corresponding to own
-        _obj.mlen = list()
-
         _obj._barstack = collections.deque()  # for filter operations
         _obj._barstash = collections.deque()  # for filter operations
 
@@ -131,6 +128,7 @@ class AbstractDataBase(with_metaclass(MetaAbstractDataBase,
         ('filters', []),
         ('tz', None),
         ('tzinput', None),
+        ('qcheck', 0.0),  # timeout in seconds (float) to check for events
     )
 
     (CONNECTED, DISCONNECTED, CONNBROKEN, DELAYED,
@@ -138,22 +136,26 @@ class AbstractDataBase(with_metaclass(MetaAbstractDataBase,
 
     _NOTIFNAMES = [
         'CONNECTED', 'DISCONNECTED', 'CONNBROKEN', 'DELAYED',
-        'LIVE', 'NOTSUBSCRIBED', 'NOTSUPPORTED_TIMEFRAME' 'UNKNOWN']
+        'LIVE', 'NOTSUBSCRIBED', 'NOTSUPPORTED_TIMEFRAME', 'UNKNOWN']
 
     @classmethod
     def _getstatusname(cls, status):
         return cls._NOTIFNAMES[status]
 
     _feed = None
+    _store = None
+
+    _qcheck = 0.0
+
     _tmoffset = datetime.timedelta()
 
     # Set to non 0 if resampling/replaying
     resampling = 0
     replaying = 0
 
-    def _start(self):
-        self.start()
+    _started = False
 
+    def _start_finish(self):
         # A live feed (for example) may have learnt something about the
         # timezones after the start and that's why the date/time related
         # parameters are converted at this late stage
@@ -180,6 +182,14 @@ class AbstractDataBase(with_metaclass(MetaAbstractDataBase,
         self.sessionstart = time2num(self.p.sessionstart)
         self.sessionend = time2num(self.p.sessionend)
 
+        self._started = True
+
+    def _start(self):
+        self.start()
+
+        if not self._started:
+            self._start_finish()
+
     def _timeoffset(self):
         return self._tmoffset
 
@@ -203,6 +213,16 @@ class AbstractDataBase(with_metaclass(MetaAbstractDataBase,
             return num2date(self.lines.datetime[0], tz or self._tz, naive)
 
         return num2date(dt, tz or self._tz, naive)
+
+    def haslivedata(self):
+        return False  # must be overriden for those that can
+
+    def do_qcheck(self, onoff, qlapse):
+        # if onoff is True the data will wait p.qcheck for incoming live data
+        # on its queue.
+        qwait = self.p.qcheck if onoff else 0.0
+        qwait = max(0.0, qwait - qlapse)
+        self._qcheck = qwait
 
     def islive(self):
         '''If this returns True, ``Cerebro`` will deactivate ``preload`` and
@@ -233,15 +253,14 @@ class AbstractDataBase(with_metaclass(MetaAbstractDataBase,
     def getfeed(self):
         return self._feed
 
-    def qbuffer(self, savemem=0):
-        extrasize = self.resampling
+    def qbuffer(self, savemem=0, replaying=False):
+        extrasize = self.resampling or replaying
         for line in self.lines:
             line.qbuffer(savemem=savemem, extrasize=extrasize)
 
     def start(self):
         self._barstack = collections.deque()
         self._barstash = collections.deque()
-        self.mlen = list()
         self._laststatus = self.CONNECTED
 
     def stop(self):
@@ -249,6 +268,12 @@ class AbstractDataBase(with_metaclass(MetaAbstractDataBase,
 
     def clone(self, **kwargs):
         return DataClone(dataname=self, **kwargs)
+
+    def copyas(self, _dataname, **kwargs):
+        d = DataClone(dataname=self, **kwargs)
+        d._dataname = _dataname
+        d._name = _dataname
+        return d
 
     def setenvironment(self, env):
         '''Keep a reference to the environment'''
@@ -286,7 +311,7 @@ class AbstractDataBase(with_metaclass(MetaAbstractDataBase,
     def _tick_fill(self, force=False):
         # If nothing filled the tick_xxx attributes, the bar is the tick
         alias0 = self._getlinealias(0)
-        if force or getattr(self, 'tick_', alias0) is None:
+        if force or getattr(self, 'tick_' + alias0, None) is None:
             for lalias in self.getlinealiases():
                 if lalias != 'datetime':
                     setattr(self, 'tick_' + lalias,
@@ -294,8 +319,15 @@ class AbstractDataBase(with_metaclass(MetaAbstractDataBase,
 
             self.tick_last = getattr(self.lines, alias0)[0]
 
-    def advance(self, size=1, datamaster=None):
-        self._tick_nullify()
+    def advance_peek(self):
+        if len(self) < self.buflen():
+            return self.lines.datetime[1]  # return the future
+
+        return float('inf')  # max date else
+
+    def advance(self, size=1, datamaster=None, ticks=True):
+        if ticks:
+            self._tick_nullify()
 
         # Need intercepting this call to support datas with
         # different lengths (timeframes)
@@ -311,16 +343,18 @@ class AbstractDataBase(with_metaclass(MetaAbstractDataBase,
             if self.lines.datetime[0] > datamaster.lines.datetime[0]:
                 self.lines.rewind()
             else:
-                self.mlen.append(len(datamaster) - 1)
-                self._tick_fill()
+                if ticks:
+                    self._tick_fill()
         elif len(self) < self.buflen():
             # a resampler may have advance us past the last point
-            self._tick_fill()
+            if ticks:
+                self._tick_fill()
 
-    def next(self, datamaster=None):
+    def next(self, datamaster=None, ticks=True):
 
         if len(self) >= self.buflen():
-            self._tick_nullify()
+            if ticks:
+                self._tick_nullify()
 
             # not preloaded - request next bar
             ret = self.load()
@@ -330,10 +364,11 @@ class AbstractDataBase(with_metaclass(MetaAbstractDataBase,
 
             if datamaster is None:
                 # bar is there and no master ... return load's result
-                self._tick_fill()
+                if ticks:
+                    self._tick_fill()
                 return ret
         else:
-            self.advance()
+            self.advance(ticks=ticks)
 
         # a bar is "loaded" or was preloaded - index has been moved to it
         if datamaster is not None:
@@ -342,11 +377,12 @@ class AbstractDataBase(with_metaclass(MetaAbstractDataBase,
                 # can't deliver new bar, too early, go back
                 self.rewind()
             else:
-                self.mlen.append(len(datamaster) - 1)
-                self._tick_fill()
+                if ticks:
+                    self._tick_fill()
 
         else:
-            self._tick_fill()
+            if ticks:
+                self._tick_fill()
 
         # tell the world there is a bar (either the new or the previous
         return True
@@ -364,13 +400,16 @@ class AbstractDataBase(with_metaclass(MetaAbstractDataBase,
         for ff, fargs, fkwargs in self._ffilters:
             ret += ff.last(self, *fargs, **fkwargs)
 
+        doticks = False
         if datamaster is not None and self._barstack:
-            self.mlen.append(len(datamaster) - 1)
-            self._tick_fill()
+            doticks = True
 
         while self._fromstack(forward=True):
             # consume bar(s) produced by "last"s - adding room
             pass
+
+        if doticks:
+            self._tick_fill()
 
         return bool(ret)
 
@@ -422,7 +461,7 @@ class AbstractDataBase(with_metaclass(MetaAbstractDataBase,
                 continue
             if dt > self.todate:
                 # discard loaded bar and break out
-                self.backwards()
+                self.backwards(force=True)
                 break
 
             # Pass through filters
@@ -594,6 +633,17 @@ class CSVDataBase(with_metaclass(MetaCSVDataBase, DataBase)):
             self.f.close()
             self.f = None
 
+    def preload(self):
+        while self.load():
+            pass
+
+        self._last()
+        self.home()
+
+        # preloaded - no need to keep the object around - breaks multip in 3.x
+        self.f.close()
+        self.f = None
+
     def _load(self):
         if self.f is None:
             return False
@@ -685,3 +735,7 @@ class DataClone(AbstractDataBase):
             line[0] = dline[0]
 
         return True
+
+    def advance(self, size=1, datamaster=None, ticks=True):
+        self._dlen += size
+        super(DataClone, self).advance(size, datamaster, ticks=ticks)

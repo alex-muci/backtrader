@@ -1,3 +1,231 @@
+1.9.26.105
+  - Adapt order_target_value to short cash semantics in broker
+  - Several refinements to resampling to deliver synchronized bars on end of
+    session
+  - Add exceptions and strategy skip exception
+  - IBData - Deactivate code for faster downloads during absence of live data
+    to avoid breaking reconnection code
+  - Allow selective order based skipping of coc
+
+1.9.25.105
+  - Close #244 by giving feeds the chance to finish initialization by
+    themselves, ensuring proper initialization and allowing early data
+    download (merged and refactored PR #245)
+  - Add support for live data detection and dynamic queue check
+    timeouts to avoid pausing on historical traversal when other feeds
+    are live
+  - Add PR #242 DrawDown length observer
+  - Assimilate PR #240 into cash asset
+  - Fixes #239 by providing empty values if the data or indicator has
+    not produced a value yet
+  - New DrawDown Analyzer and refactoring of DrawDown observer
+  - Closes #235 by updating PivotPoint Family to make plotting work under new
+    sync scheme and automate self-coupling
+  - Some usual documentation updates / typo corrections
+  - Minor corrections/improvements
+  - Address #243 by sorting (timeframe, compression) data feeds internally to
+    avoid forcing users to pass smaller timeframes first
+  - Add end-of-session calculation, including adding end-of-session to daily
+    data from IB
+
+
+1.9.24.105
+  - Complete TimeFrameAnalyzerBase with a call to _nextstart and children
+  - Improve 1st comparison point of benchmark
+  - Documentation updates / samples clean-up
+  - IBData feed timezone and backfill gap corrections
+  - Initial support for CFD products (untested) to request BID and not TRADES
+  - Ensure initialization of backfill_from data feeds
+
+1.9.23.105
+  - Benchmark observer will observer after the strategy has reached its
+    minimum period
+  - Refactoring of TimeFrameAnalyzerBase
+  - Ensure NoTimeFrame name is always returned rightly
+  - Documentation updates
+  - btrun will only load data feeds if they can be imported
+
+1.9.22.105
+  - Improve unleveraged value by not unleveraging profit and loss
+  - Doc edits from PR #223, #224
+  - Correct refactoring leftover for backfill_from for IBData and OandaData
+  - Extend btfd sample with logs
+  - Add ZeroDivisionError to SharpeRatio
+  - Add automargin to commission info schemes
+
+1.9.21.105
+  - Closes #230 by closing the pool on completion rather than waiting for
+    garbage collection
+  - Default to show unleveraged value and allow retrieval of leveraged
+    value
+  - Update btfd sample to updated leveraged value
+  - Improve order value reporting with leverage
+  - Correct dataseries TimeFrame name presentation in writers
+  - Doc updates
+
+1.9.20.105
+  - Added pair-trading sample from @remroc: PR #223, #224, #225
+  - Some documentation updates
+  - Leverage support
+  - Closes #227 numfigs type=int in arg parsing
+  - Correct no-plotting of datas
+  - Correct pandasdata integer addressing issue
+  - Correct time comparison when running with runonce=True
+  - Update SessionFiller to more stringent standards in modern versions
+
+1.9.19.105
+  - Add time comparison for single line operations
+  - Correct plotting error calculations with volume and improve data on data
+  - Remove cosmetic comma
+
+1.9.18.105
+  - PR #221 Correct onda candleFormat parameter
+  - Allow data on data plotting and no data plotting
+  - Remove double labeling on indicators
+  - Analyzer LogReturnsRolling
+  - Observer LogReturns
+  - Improved order management of input for validity
+  - Set default end date for online downloads in Yahoo if not set
+  - Gold vs SP500 Sample
+
+1.9.17.105
+  - PR #195 make runstrats iterable to allow callbacks
+  - Fixes #189 by adding callback during optimization
+  - Fixes #205 to avoid errors during unnamed argument usage in strategy
+  - Regression correction for no short-cashing
+
+1.9.16.105:
+  - PR #212 added Vortex indicator
+  - Closed #215 writer opens file in binary mode
+  - Closed #210 missing comma in status definitions lists in feed
+  - PR #203 python3 compatiblity for ib (long)
+  - Added shortcash parameter to broker to control cash increase/decrease
+
+1.9.15.104:
+  - PR #202 to fix import in ibdata
+  - PR #196, #198 - doc updates
+  - PR #199 delegate notifications in Chainer Data Feed
+  - PercentChange indicator request from #192
+  - %B BollingerBands from #190
+  - Check bar time before market type execution #190
+
+1.9.14.102:
+  - Pull Request #187 to improve SQN and test
+  - Update some samples
+  - Refactor new KST - Closes #183
+  - Closes #163 adding interest as commission to correct calculate PNL
+  - Improve SignalStrategy overriden methods to avoid impacting user subclasses
+  - Closes #168 - Fetching open orders
+  - #173 short-circuit calculation sqn in case of no trades
+  - strategy selection sample
+
+1.9.13.102:
+  - Closes #179 Ichimoku indicator
+  - Plotting allows now filling areas and showing the indicator name even with
+    plotlinelabels active
+  - Use _minperiod in linebuffer.qbuffer for maxlen rather than default 1
+  - Closes #169 - Correct DaySteps filter
+  - Add ROC100 indicator
+  - Add KnowSureThing indicator
+
+1.9.12.99:
+  - Improve cheat-on-close to provide exact match price even during replay
+  - Allow offsetting resampling bar set by timeframe/compression units
+
+1.9.11.99:
+  - Separate resampling from replaying for synchronization purposes
+  - Modernize sample to better check #169
+
+1.9.10.99
+  - Further use cases coverage for new synchronizatio method and
+    resample/replay
+  - PR #173 - SharpeRatio returns None if it cannot be calculated
+  - PR #173 - SQN returns 0 (instead of raising exception) if no trades have
+    been made
+  - Cover replay case for cheat-on-close
+  - Extra analyzers in VWR Sample and modernized PivotPoint sample
+  - Reworked of plotting for datas of different length by matching date indexes
+  - Removed old mlen accounting for plotting different timeframes
+  - #172 cover extra unwinding of linebuffer and add extra size to qbuffer
+
+1.9.9.99
+  - Correct RSI_EMA, RSI_SMA subclassing
+  - Add cheat-on-close to the broker
+  - Correct own operation bug directly on lines (was fine on line
+    actions/operations)
+  - Add support for __neg__ operator (-) to lines
+  - Adresses #170 by forcing a bool as return
+  - Extend signal trigger detection to inverse and any values
+  - Support for embedding in a line non-line types
+  - Closes #171. Make safepow the default
+  - Use DataTrades only if several datas are in place
+
+1.9.8.99
+  - Workaround IbPy not converting bytes by passing strings in Python3
+  - safepow parameter for StandardDeviation
+
+1.9.7.99
+  - Closes #156 by adding LinePlotterIndicator
+  - Closes #154 by providing hollow candlesticks
+  - Ensure unique name for analyzers to get all printed out by writers
+  - Fix installation instructions for plotting
+
+1.9.6.99:
+  - Allow defining the datetime format string for the x axis and data points.
+    Closes #148
+  - Rework plotting to account for datas with different lengths and work with
+    auto locators/formatters
+  - Improve signals to handle multiple datas and wrap LineIterators (Indicators)
+  - Use excess returns for the standard deviation in Sharpe Ratio
+
+1.9.5.99
+  - Improve data synchronization behavior
+  - Make new DataTrades synchronize to strategy
+  - Correct TimeFrameAnalyzerBase to synchronize with strategy
+
+1.9.4.99
+  - Add DataTrades Observer to plot the trades of multiple datas independently
+  - Make this observer the default in cerebro (old behavior via oldtrades=True)
+
+1.9.3.99:
+  - copyas method in data feeds to let a clone data be seen differently in the
+    broker
+  - Count trades on strategy basis and not main data basis
+  - Add RQAlpha link
+  - Fixes #153 by closing file descriptors after preloading
+
+1.9.2.99:
+  - Correct plotting for multi strategy approach
+  - Make Crossover plot like any other indicator
+
+1.9.1.99:
+  - Automatic inline plotting if running inside a notebook
+  - Correct new plotting code for Python 3
+
+1.8.14.99:
+  - README Updates
+  - Improvements to generic Store management and VChartfile
+  - Addresses time underflow/overflow in #143
+
+1.8.13.99:
+  - Set annualization factor for days to 252 in SharpeRatio to match the value
+    most used in the literature
+  - Add Returns analyzer
+  - Closes #137 Added VWR (VariabilityWeightedReturn) analyzer
+  - Fixes #141. optreturn must only be applied when optimizing
+  - Correct getting default value for ptfimeframe in pyfolio2 sample. Fixes #142
+
+1.8.12.99:
+  - Rework SharpeRatio, add annualization and add SharpeRatio_A with default
+    annualization
+  - Improve data / results message passing during optimization
+  - Some documentation improvements/corrections
+
+1.8.11.99:
+  - Add rounding control to YahooFinanceCSVData and update docs. Closes #138
+  - Sharpe Ratio external testing sample. Addresses #137
+  - order_target_api, sample and cos. Closes #134
+
 1.8.10.99:
   - Added Any, All, Reduce, function replacements
   - Added AnyN, AllN, ReduceN indicators

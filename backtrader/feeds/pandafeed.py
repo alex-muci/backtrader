@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -90,7 +90,7 @@ class PandasDirectData(feed.DataBase):
         tstamp = row[colidx]
 
         # convert to float via datetime and store it
-        dt = tstamp.to_datetime()
+        dt = tstamp.to_pydatetime()
         dtnum = date2num(dt)
 
         # get the line to be set
@@ -218,7 +218,7 @@ class PandasData(feed.DataBase):
             line = getattr(self.lines, datafield)
 
             # indexing for pandas: 1st is colum, then row
-            line[0] = self.p.dataname[colindex][self._idx]
+            line[0] = self.p.dataname.ix[self._idx, colindex]
 
         # datetime conversion
         coldtime = self._colmapping[self.datafields[0]]
@@ -231,7 +231,7 @@ class PandasData(feed.DataBase):
             tstamp = self.p.dataname.index[coldtime][self._idx]
 
         # convert to float via datetime and store it
-        dt = tstamp.to_datetime()
+        dt = tstamp.to_pydatetime()
         dtnum = date2num(dt)
         self.lines.datetime[0] = dtnum
 

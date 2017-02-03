@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -35,14 +35,28 @@ import backtrader as bt
 DATAFORMATS = dict(
     btcsv=bt.feeds.BacktraderCSVData,
     vchartcsv=bt.feeds.VChartCSVData,
-    vchart=bt.feeds.VChartData,
-    vcdata=bt.feeds.VCData,
-    ibdata=bt.feeds.IBData,
+    vcfile=bt.feeds.VChartFile,
     sierracsv=bt.feeds.SierraChartCSVData,
     yahoocsv=bt.feeds.YahooFinanceCSVData,
     yahoocsv_unreversed=bt.feeds.YahooFinanceCSVData,
     yahoo=bt.feeds.YahooFinanceData,
 )
+
+try:
+    DATAFORMATS['vcdata'] = bt.feeds.VCData
+except AttributeError:
+    pass  # no comtypes available
+
+try:
+    DATAFORMATS['ibdata'] = bt.feeds.IBData,
+except AttributeError:
+    pass  # no ibpy available
+
+try:
+    DATAFORMATS['oandadata'] = bt.feeds.OandaData,
+except AttributeError:
+    pass  # no oandapy available
+
 
 TIMEFRAMES = dict(
     microseconds=bt.TimeFrame.MicroSeconds,

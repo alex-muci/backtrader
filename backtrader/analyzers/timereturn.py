@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -31,8 +31,8 @@ class TimeReturn(TimeFrameAnalyzerBase):
     Params:
 
       - ``timeframe`` (default: ``None``)
-        If ``None`` then the complete return over the entire backtested period
-        will be reported
+        If ``None`` the ``timeframe`` of the 1st data in the system will be
+        used
 
         Pass ``TimeFrame.NoTimeFrame`` to consider the entire dataset with no
         time constraints
@@ -78,12 +78,14 @@ class TimeReturn(TimeFrameAnalyzerBase):
         each return as keys
     '''
 
-    params = (('data', None),
-              ('firstopen', True))
+    params = (
+        ('data', None),
+        ('firstopen', True),
+    )
 
     def start(self):
-        super(TimeReturn, self).start()
         self._value_start = 0.0
+        self._lastvalue = None
         if self.p.data is None:
             # keep the initial portfolio value if not tracing a data
             self._lastvalue = self.strategy.broker.getvalue()
@@ -95,9 +97,10 @@ class TimeReturn(TimeFrameAnalyzerBase):
         else:
             self._value = self.p.data[0]  # the data value if tracking data
 
-    def _on_dt_over(self):
+    def on_dt_over(self):
         # next is called in a new timeframe period
-        if self.p.data is None or len(self.p.data) > 1:
+        # if self.p.data is None or len(self.p.data) > 1:
+        if self.p.data is None or self._lastvalue is not None:
             self._value_start = self._lastvalue  # update value_start to last
 
         else:

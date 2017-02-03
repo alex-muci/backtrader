@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -181,6 +181,29 @@ class BackBroker(bt.BrokerBase):
           Provide *slippage* even if the price falls outside the ``high`` -
           ``low`` range.
 
+        - ``coc`` (default: ``False``)
+
+          *Cheat-On-Close* Setting this to ``True`` with ``set_coc`` enables
+           matching a ``Market`` order to the closing price of the bar in which
+           the order was issued. This is actually *cheating*, because the bar
+           is *closed* and any order should first be matched against the prices
+           in the next bar
+
+        - ``int2pnl`` (default: ``True``)
+
+          Assign generated interest (if any) to the profit and loss of
+          operation that reduces a position (be it long or short). There may be
+          cases in which this is undesired, because different strategies are
+          competing and the interest would be assigned on a non-deterministic
+          basis to any of them.
+
+        - ``shortcash`` (default: ``True``)
+
+          If True then cash will be increased when a stocklike asset is shorted
+          and the calculated value for the asset will be negative.
+
+          If ``False`` then the cash will be deducted as operation cost and the
+          calculated value will be positive to end up with the same amount
     '''
     params = (
         ('cash', 10000.0),
@@ -194,16 +217,28 @@ class BackBroker(bt.BrokerBase):
         ('slip_match', True),
         ('slip_limit', True),
         ('slip_out', False),
+        ('coc', False),
+        ('int2pnl', True),
+        ('shortcash', True),
     )
 
     def init(self):
         super(BackBroker, self).init()
         self.startingcash = self.cash = self.p.cash
+        self._value = self.cash
+        self._valuemkt = 0.0  # no open position
+
+        self._valuelever = 0.0  # no open position
+        self._valuemktlever = 0.0  # no open position
+
+        self._leverage = 1.0  # initially nothing is open
+        self._unrealized = 0.0  # no open position
 
         self.orders = list()  # will only be appending
         self.pending = collections.deque()  # popleft and append(right)
 
         self.positions = collections.defaultdict(Position)
+        self.d_credit = collections.defaultdict(float)  # credit per data
         self.notifs = collections.deque()
 
         self.submitted = collections.deque()
@@ -215,6 +250,18 @@ class BackBroker(bt.BrokerBase):
             pass
 
         return None
+
+    def set_int2pnl(self, int2pnl):
+        '''Configure assignment of interest to profit and loss'''
+        self.p.int2pnl = int2pnl
+
+    def set_coc(self, coc):
+        '''Configure the Cheat-On-Close method to buy the close on order bar'''
+        self.p.coc = coc
+
+    def set_shortcash(self, shortcash):
+        '''Configure the shortcash parameters'''
+        self.p.shortcash = shortcash
 
     def set_slippage_perc(self, perc,
                           slip_open=True, slip_limit=True,
@@ -261,6 +308,7 @@ class BackBroker(bt.BrokerBase):
     def set_cash(self, cash):
         '''Sets the cash parameter (alias: ``setcash``)'''
         self.startingcash = self.cash = self.p.cash = cash
+        self._value = cash
 
     setcash = set_cash
 
@@ -275,25 +323,90 @@ class BackBroker(bt.BrokerBase):
         self.notify(order)
         return True
 
-    def get_value(self, datas=None):
+    def get_value(self, datas=None, mkt=False, lever=False):
         '''Returns the portfolio value of the given datas (if datas is ``None``, then
         the total portfolio value will be returned (alias: ``getvalue``)
         '''
+        if datas is None:
+            if mkt:
+                return self._valuemkt if not lever else self._valuemktlever
+
+            return self._value if not lever else self._valuelever
+
+        return self._get_value(datas=datas, lever=lever)
+
+    getvalue = get_value
+
+    def get_value_lever(self, datas=None, mkt=False):
+        return self.get_value(datas=datas, mkt=mkt)
+
+    def _get_value(self, datas=None, lever=False):
         pos_value = 0.0
+        pos_value_unlever = 0.0
+        unrealized = 0.0
 
         for data in datas or self.positions:
             comminfo = self.getcommissioninfo(data)
             position = self.positions[data]
-            dvalue = comminfo.getvalue(position, data.close[0])
+            # use valuesize:  returns raw value, rather than negative adj val
+            if not self.p.shortcash:
+                dvalue = comminfo.getvalue(position, data.close[0])
+            else:
+                dvalue = comminfo.getvaluesize(position.size, data.close[0])
+
+            dunrealized = comminfo.profitandloss(position.size, position.price,
+                                                 data.close[0])
             if datas and len(datas) == 1:
+                if lever and dvalue > 0:
+                    dvalue -= dunrealized
+                    return (dvalue / comminfo.get_leverage()) + dunrealized
                 return dvalue  # raw data value requested, short selling is neg
-            pos_value += abs(dvalue)  # short selling adds value
 
-        return self.cash + pos_value
+            if not self.p.shortcash:
+                dvalue = abs(dvalue)  # short selling adds value in this case
 
-    getvalue = get_value
+            pos_value += dvalue
+            unrealized += dunrealized
+
+            if dvalue > 0:  # long position - unlever
+                dvalue -= dunrealized
+                pos_value_unlever += (dvalue / comminfo.get_leverage())
+                pos_value_unlever += dunrealized
+            else:
+                pos_value_unlever += dvalue
+
+        self._value = self.cash + pos_value_unlever
+        self._valuemkt = pos_value_unlever
+
+        self._valuelever = self.cash + pos_value
+        self._valuemktlever = pos_value
+
+        self._leverage = pos_value / (pos_value_unlever or 1.0)
+        self._unrealized = unrealized
+
+        return self._value if not lever else self._valuelever
+
+    def get_leverage(self):
+        return self._leverage
+
+    def get_orders_open(self, safe=False):
+        '''Returns an iterable with the orders which are still open (either not
+        executed or partially executed
+
+        The orders returned must not be touched.
+
+        If order manipulation is needed, set the parameter ``safe`` to True
+        '''
+        if safe:
+            os = [x.clone() for x in self.pending]
+        else:
+            os = [x for x in self.pending]
+
+        return os
 
     def getposition(self, data):
+        '''Returns the current position status (a ``Position`` instance) for
+        the given ``data``'''
         return self.positions[data]
 
     def orderstatus(self, order):
@@ -369,7 +482,8 @@ class BackBroker(bt.BrokerBase):
 
         return self.submit(order)
 
-    def _execute(self, order, ago=None, price=None, cash=None, position=None):
+    def _execute(self, order, ago=None, price=None, cash=None, position=None,
+                 dtcoc=None):
         # ago = None is used a flag for pseudo execution
         if ago is not None and price is None:
             return  # no psuedo exec no price - no execution
@@ -406,8 +520,16 @@ class BackBroker(bt.BrokerBase):
         # "Closing" totally or partially is possible. Cash may be re-injected
         if closed:
             # Adjust to returned value for closed items & acquired opened items
-            closedvalue = comminfo.getoperationcost(closed, pprice_orig)
-            cash += closedvalue + pnl * comminfo.stocklike
+            if self.p.shortcash:
+                closedvalue = comminfo.getvaluesize(-closed, pprice_orig)
+            else:
+                closedvalue = comminfo.getoperationcost(closed, pprice_orig)
+
+            closecash = closedvalue
+            if closedvalue > 0:  # long position closed
+                closecash /= comminfo.get_leverage()  # inc cash with lever
+
+            cash += closecash + pnl * comminfo.stocklike
             # Calculate and substract commission
             closedcomm = comminfo.getcommission(closed, price)
             cash -= closedcomm
@@ -426,8 +548,16 @@ class BackBroker(bt.BrokerBase):
 
         popened = opened
         if opened:
-            openedvalue = comminfo.getoperationcost(opened, price)
-            cash -= openedvalue
+            if self.p.shortcash:
+                openedvalue = comminfo.getvaluesize(opened, price)
+            else:
+                openedvalue = comminfo.getoperationcost(opened, price)
+
+            opencash = openedvalue
+            if openedvalue > 0:  # long position being opened
+                opencash /= comminfo.get_leverage()  # dec cash with level
+
+            cash -= opencash  # original behavior
 
             openedcomm = comminfo.getcommission(opened, price)
             cash -= openedcomm
@@ -471,8 +601,11 @@ class BackBroker(bt.BrokerBase):
             # do a real position update if something was executed
             position.update(execsize, price, order.data.datetime.datetime())
 
+            if closed and self.p.int2pnl:  # Assign accumulated interest data
+                closedcomm += self.d_credit.pop(order.data, 0.0)
+
             # Execute and notify the order
-            order.execute(order.data.datetime[ago],
+            order.execute(dtcoc or order.data.datetime[ago],
                           execsize, price,
                           closed, closedvalue, closedcomm,
                           opened, openedvalue, openedcomm,
@@ -492,12 +625,23 @@ class BackBroker(bt.BrokerBase):
         self.notifs.append(order.clone())
 
     def _try_exec_market(self, order, popen, phigh, plow):
-        if order.isbuy():
-            p = self._slip_up(phigh, popen, doslip=self.p.slip_open)
+        ago = 0
+        if self.p.coc and order.info.get('coc', True):
+            dtcoc = order.created.dt
+            exprice = order.created.pclose
         else:
-            p = self._slip_down(plow, popen, doslip=self.p.slip_open)
+            if order.data.datetime[0] <= order.created.dt:
+                return    # can only execute after creation time
 
-        self._execute(order, ago=0, price=p)
+            dtcoc = None
+            exprice = popen
+
+        if order.isbuy():
+            p = self._slip_up(phigh, exprice, doslip=self.p.slip_open)
+        else:
+            p = self._slip_down(plow, exprice, doslip=self.p.slip_open)
+
+        self._execute(order, ago=0, price=p, dtcoc=dtcoc)
 
     def _try_exec_close(self, order, pclose):
         # pannotated allows to keep track of the closing bar if there is no
@@ -700,7 +844,9 @@ class BackBroker(bt.BrokerBase):
             if pos:
                 comminfo = self.getcommissioninfo(data)
                 dt0 = data.datetime.datetime()
-                credit += comminfo.get_credit_interest(data, pos, dt0)
+                dcredit = comminfo.get_credit_interest(data, pos, dt0)
+                self.d_credit[data] += dcredit
+                credit += dcredit
                 pos.datetime = dt0  # mark last credit operation
 
         self.cash -= credit
@@ -729,6 +875,8 @@ class BackBroker(bt.BrokerBase):
                                                  data.close[0])
                 # record the last adjustment price
                 pos.adjbase = data.close[0]
+
+        self._get_value()  # update value
 
 
 # Alias

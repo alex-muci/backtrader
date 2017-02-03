@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -29,6 +29,8 @@ class Cash(Observer):
 
     Params: None
     '''
+    _stclock = True
+
     lines = ('cash',)
 
     plotinfo = dict(plot=True, subplot=True)
@@ -43,6 +45,8 @@ class Value(Observer):
 
     Params: None
     '''
+    _stclock = True
+
     lines = ('value',)
 
     plotinfo = dict(plot=True, subplot=True)
@@ -57,6 +61,8 @@ class Broker(Observer):
 
     Params: None
     '''
+    _stclock = True
+
     alias = ('CashValue',)
     lines = ('cash', 'value')
 

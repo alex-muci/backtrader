@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015,2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -72,6 +72,9 @@ class Chainer(bt.with_metaclass(MetaChainer, bt.DataBase)):
         super(Chainer, self).stop()
         for d in self._args:
             d.stop()
+
+    def get_notifications(self):
+        return [] if self._d is None else self._d.get_notifications()
 
     def _gettz(self):
         '''To be overriden by subclasses which may auto-calculate the

@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015,2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -199,10 +199,13 @@ class OandaData(with_metaclass(MetaOandaData, DataBase)):
 
         self._statelivereconn = False  # if reconnecting in live state
         self._storedmsg = dict()  # keep pending live message (under None)
+        self.qlive = queue.Queue()
 
         if self.p.backfill_from is not None:
             self._state = self._ST_FROM
+            self.p.backfill_from._start()
         else:
+            self._start_finish()
             self._state = self._ST_START  # initial state for _load
             self._st_start()
 
@@ -222,7 +225,7 @@ class OandaData(with_metaclass(MetaOandaData, DataBase)):
             self.qhist = self.o.candles(
                 self.p.dataname, dtbegin, dtend,
                 self._timeframe, self._compression,
-                candleFormat=self.p.candleFormat,
+                candleFormat=self._candleFormat,
                 includeFirst=self.p.includeFirst)
 
             self._state = self._ST_HISTORBACK
@@ -248,6 +251,9 @@ class OandaData(with_metaclass(MetaOandaData, DataBase)):
         super(OandaData, self).stop()
         self.o.stop()
 
+    def haslivedata(self):
+        return bool(self._storedmsg or self.qlive)  # do not return the objs
+
     def _load(self):
         if self._state == self._ST_OVER:
             return False
@@ -256,7 +262,7 @@ class OandaData(with_metaclass(MetaOandaData, DataBase)):
             if self._state == self._ST_LIVE:
                 try:
                     msg = (self._storedmsg.pop(None, None) or
-                           self.qlive.get(timeout=self.p.qcheck))
+                           self.qlive.get(timeout=self._qcheck))
                 except queue.Empty:
                     return None  # indicate timeout situation
 
@@ -373,7 +379,7 @@ class OandaData(with_metaclass(MetaOandaData, DataBase)):
                     continue
 
                 # copy lines of the same name
-                for alias in self.lines.getaliases():
+                for alias in self.lines.getlinealiases():
                     lsrc = getattr(self.p.backfill_from.lines, alias)
                     ldst = getattr(self.lines, alias)
 

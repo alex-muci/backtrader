@@ -2,7 +2,7 @@
 # -*- coding: utf-8; py-indent-offset:4 -*-
 ###############################################################################
 #
-# Copyright (C) 2015, 2016 Daniel Rodriguez
+# Copyright (C) 2015, 2016, 2017 Daniel Rodriguez
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -26,13 +26,13 @@ import inspect
 import itertools
 import operator
 
-from .utils.py3 import (filter, keys, iteritems, map,  string_types,
-                        with_metaclass)
+from .utils.py3 import (filter, keys, integer_types, iteritems, itervalues,
+                        map, string_types, with_metaclass)
 
 import backtrader as bt
 from .lineiterator import LineIterator, StrategyBase
 from .lineroot import LineSingle
-from .metabase import ItemCollection
+from .metabase import ItemCollection, findowner
 from .trade import Trade
 from .utils import OrderedDict, AutoOrderedDict, AutoDictList
 
@@ -62,11 +62,18 @@ class MetaStrategy(StrategyBase.__class__):
            name != 'Strategy' and not name.startswith('_'):
             cls._indcol[name] = cls
 
-    def dopreinit(cls, _obj, env, *args, **kwargs):
+    def donew(cls, *args, **kwargs):
+        _obj, args, kwargs = super(MetaStrategy, cls).donew(*args, **kwargs)
+
+        # Find the owner and store it
+        _obj.env = findowner(_obj, bt.Cerebro)
+
+        return _obj, args, kwargs
+
+    def dopreinit(cls, _obj, *args, **kwargs):
         _obj, args, kwargs = \
             super(MetaStrategy, cls).dopreinit(_obj, *args, **kwargs)
-        _obj.env = env
-        _obj.broker = env.broker
+        _obj.broker = _obj.env.broker
         _obj._sizer = bt.sizers.FixedSize()
         _obj._orders = list()
         _obj._orderspending = list()
@@ -75,6 +82,7 @@ class MetaStrategy(StrategyBase.__class__):
 
         _obj.stats = _obj.observers = ItemCollection()
         _obj.analyzers = ItemCollection()
+        _obj._alnames = collections.defaultdict(itertools.count)
         _obj.writers = list()
 
         _obj._slave_analyzers = list()
@@ -100,11 +108,12 @@ class Strategy(with_metaclass(MetaStrategy, StrategyBase)):
     _ltype = LineIterator.StratType
 
     csv = True
+    _oldsync = False  # update clock using old methodology : data 0
 
-    # This unnamed line is meant to allow having "len" and "forwarding"
-    extralines = 1
+    # keep the latest delivered data date in the line
+    lines = ('datetime',)
 
-    def qbuffer(self, savemem=0):
+    def qbuffer(self, savemem=0, replaying=False):
         '''Enable the memory saving schemes. Possible values for ``savemem``:
 
           0: No savings. Each lines object keeps in memory all values
@@ -129,7 +138,7 @@ class Strategy(with_metaclass(MetaStrategy, StrategyBase)):
 
         elif savemem > 0:
             for data in self.datas:
-                data.qbuffer()
+                data.qbuffer(replaying=replaying)
 
             for line in self.lines:
                 line.qbuffer(savemem=1)
@@ -208,6 +217,8 @@ class Strategy(with_metaclass(MetaStrategy, StrategyBase)):
 
     def _addanalyzer(self, ancls, *anargs, **ankwargs):
         anname = ankwargs.pop('_name', '') or ancls.__name__.lower()
+        nsuffix = next(self._alnames[anname])
+        anname += str(nsuffix or '')  # 0 (first instance) gets no suffix
         analyzer = ancls(*anargs, **ankwargs)
         self.analyzers.append(analyzer, anname)
 
@@ -235,12 +246,19 @@ class Strategy(with_metaclass(MetaStrategy, StrategyBase)):
         minperstatus = max(dlens)
         return minperstatus
 
-    def _oncepost(self):
+    def _oncepost(self, dt):
         for indicator in self._lineiterators[LineIterator.IndType]:
             if len(indicator._clock) > len(indicator):
                 indicator.advance()
 
-        self.advance()
+        if self._oldsync:
+            # Strategy has not been reset, the line is there
+            self.advance()
+        else:
+            # strategy has been reset to beginning. advance step by step
+            self.forward()
+
+        self.lines.datetime[0] = dt
         self._notify()
 
         minperstatus = self._getminperstatus()
@@ -256,6 +274,23 @@ class Strategy(with_metaclass(MetaStrategy, StrategyBase)):
         self._next_observers(minperstatus, once=True)
 
         self.clear()
+
+    def _clk_update(self):
+        if self._oldsync:
+            clk_len = super(Strategy, self)._clk_update()
+            self.lines.datetime[0] = max(d.datetime[0]
+                                         for d in self.datas if len(d))
+            return clk_len
+
+        newdlens = [len(d) for d in self.datas]
+        if any(nl > l for l, nl in zip(self._dlens, newdlens)):
+            self.forward()
+
+        self.lines.datetime[0] = max(d.datetime[0]
+                                     for d in self.datas if len(d))
+        self._dlens = newdlens
+
+        return len(self)
 
     def _next(self):
         super(Strategy, self)._next()
@@ -277,7 +312,12 @@ class Strategy(with_metaclass(MetaStrategy, StrategyBase)):
                     analyzer._prenext()
 
             if once:
-                observer.advance()
+                if len(self) > len(observer):
+                    if self._oldsync:
+                        observer.advance()
+                    else:
+                        observer.forward()
+
                 if minperstatus < 0:
                     observer.next()
                 elif minperstatus == 0:
@@ -304,6 +344,8 @@ class Strategy(with_metaclass(MetaStrategy, StrategyBase)):
 
         # change operators to stage 2
         self._stage2()
+
+        self._dlens = [len(data) for data in self.datas]
 
         self.start()
 
@@ -333,8 +375,12 @@ class Strategy(with_metaclass(MetaStrategy, StrategyBase)):
 
         for iocsv in self.indobscsv:
             values.append(iocsv.__class__.__name__)
-            values.append(len(iocsv))
-            values.extend(map(lambda l: l[0], iocsv.lines.itersize()))
+            lio = len(iocsv)
+            values.append(lio)
+            if lio:
+                values.extend(map(lambda l: l[0], iocsv.lines.itersize()))
+            else:
+                values.extend([''] * iocsv.lines.isize())
 
         return values
 
@@ -361,8 +407,8 @@ class Strategy(with_metaclass(MetaStrategy, StrategyBase)):
         ainfo.Value.Begin = self.broker.startingcash
         ainfo.Value.End = self.broker.getvalue()
 
-        for analyzer in self.analyzers:  # no slave for writer
-            aname = analyzer.__class__.__name__
+        # no slave analyzers for writer
+        for aname, analyzer in self.analyzers.getitems():
             ainfo[aname].Params = analyzer.p._getkwargs() or None
             ainfo[aname].Analysis = analyzer.get_analysis()
 
@@ -657,6 +703,8 @@ class Strategy(with_metaclass(MetaStrategy, StrategyBase)):
         '''
         if isinstance(data, string_types):
             data = self.getdatabyname(data)
+        elif data is None:
+            data = self.data
 
         possize = self.getposition(data, self.broker).size
         size = abs(size or possize)
@@ -671,6 +719,168 @@ class Strategy(with_metaclass(MetaStrategy, StrategyBase)):
                             tradeid=tradeid, **kwargs)
 
         return None
+
+    def order_target_size(self, data=None, target=0,
+                          price=None, plimit=None,
+                          exectype=None, valid=None,
+                          tradeid=0, **kwargs):
+
+        '''
+        Place an order to rebalance a position to have final size of ``target``
+
+        The current ``position`` size is taken into account as the start point
+        to achieve ``target``
+
+          - If ``target`` > ``pos.size`` -> buy ``target - pos.size``
+
+          - If ``target`` < ``pos.size`` -> sell ``pos.size - target``
+
+        It returns either:
+
+          - The generated order
+
+          or
+
+          - ``None`` if no order has been issued (``target == position.size``)
+        '''
+        if isinstance(data, string_types):
+            data = self.getdatabyname(data)
+        elif data is None:
+            data = self.data
+
+        possize = self.getposition(data, self.broker).size
+        if not target and possize:
+            return self.close(data=data, size=possize,
+                              price=price, plimit=plimit,
+                              exectype=exectype, valid=valid,
+                              tradeid=tradeid, **kwargs)
+
+        elif target > possize:
+            return self.buy(data=data, size=target - possize,
+                            price=price, plimit=plimit,
+                            exectype=exectype, valid=valid,
+                            tradeid=tradeid, **kwargs)
+
+        elif target < possize:
+            return self.sell(data=data, size=possize - target,
+                             price=price, plimit=plimit,
+                             exectype=exectype, valid=valid,
+                             tradeid=tradeid, **kwargs)
+
+        return None  # no execution target == possize
+
+    def order_target_value(self, data=None, target=0.0,
+                           price=None, plimit=None,
+                           exectype=None, valid=None,
+                           tradeid=0, **kwargs):
+        '''
+        Place an order to rebalance a position to have final value of
+        ``target``
+
+        The current ``value`` is taken into account as the start point to
+        achieve ``target``
+
+          - If no ``target`` then close postion on data
+          - If ``target`` > ``value`` then buy on data
+          - If ``target`` < ``value`` then sell on data
+
+        It returns either:
+
+          - The generated order
+
+          or
+
+          - ``None`` if no order has been issued
+        '''
+
+        if isinstance(data, string_types):
+            data = self.getdatabyname(data)
+        elif data is None:
+            data = self.data
+
+        possize = self.getposition(data, self.broker).size
+        value = self.broker.getvalue(datas=[data])
+        comminfo = self.broker.getcommissioninfo(data)
+
+        # Make sure a price is there
+        price = price if price is not None else data.close[0]
+
+        if not target and possize:  # closing a position
+            return self.close(data=data, size=possize,
+                              price=price, plimit=plimit,
+                              exectype=exectype, valid=valid,
+                              tradeid=tradeid, **kwargs)
+
+        elif target > value:
+            size = comminfo.getsize(price, target - value)
+            return self.buy(data=data, size=size,
+                            price=price, plimit=plimit,
+                            exectype=exectype, valid=valid,
+                            tradeid=tradeid, **kwargs)
+        elif target < value:
+            size = comminfo.getsize(price, value - target)
+            return self.sell(data=data, size=size,
+                             price=price, plimit=plimit,
+                             exectype=exectype, valid=valid,
+                             tradeid=tradeid, **kwargs)
+
+        return None  # no execution size == possize
+
+    def order_target_percent(self, data=None, target=0.0,
+                             price=None, plimit=None,
+                             exectype=None, valid=None,
+                             tradeid=0, **kwargs):
+
+        '''
+        Place an order to rebalance a position to have final value of
+        ``target`` percentage of current portfolio ``value``
+
+        ``target`` is expressed in decimal: ``0.05`` -> ``5%``
+
+        It uses ``order_target_value`` to execute the order.
+
+        Example:
+          - ``target=0.05`` and portfolio value is ``100``
+
+          - The ``value`` to be reached is ``0.05 * 100 = 5``
+
+          - ``5`` is passed as the ``target`` value to ``order_target_value``
+
+        The current ``value`` is taken into account as the start point to
+        achieve ``target``
+
+        The ``position.size`` is used to determine if a position is ``long`` /
+        ``short``
+
+          - If ``target`` > ``value``
+            - buy if ``pos.size >= 0`` (Increase a long position)
+            - sell if ``pos.size < 0`` (Increase a short position)
+
+          - If ``target`` < ``value``
+            - sell if ``pos.size >= 0`` (Decrease a long position)
+            - buy if ``pos.size < 0`` (Decrease a short position)
+
+        It returns either:
+
+          - The generated order
+
+          or
+
+          - ``None`` if no order has been issued (``target == position.size``)
+        '''
+        if isinstance(data, string_types):
+            data = self.getdatabyname(data)
+        elif data is None:
+            data = self.data
+
+        possize = self.getposition(data, self.broker).size
+        value = self.broker.getvalue()
+        target_value = value * target
+
+        return self.order_target_value(data=data, target=target_value,
+                                       price=price, plimit=plimit,
+                                       exectype=exectype, valid=valid,
+                                       tradeid=tradeid, **kwargs)
 
     def getposition(self, data=None, broker=None):
         '''
@@ -768,11 +978,35 @@ class Strategy(with_metaclass(MetaStrategy, StrategyBase)):
 
 class MetaSigStrategy(Strategy.__class__):
 
-    def dopreinit(cls, _obj, env, *args, **kwargs):
+    def __new__(meta, name, bases, dct):
+        # map user defined next to custom to be able to call own method before
+        if 'next' in dct:
+            dct['_next_custom'] = dct.pop('next')
+
+        cls = super(MetaSigStrategy, meta).__new__(meta, name, bases, dct)
+
+        # after class creation remap _next_catch to be next
+        cls.next = cls._next_catch
+        return cls
+
+    def dopreinit(cls, _obj, *args, **kwargs):
         _obj, args, kwargs = \
-            super(MetaSigStrategy, cls).dopreinit(_obj, env, *args, **kwargs)
+            super(MetaSigStrategy, cls).dopreinit(_obj, *args, **kwargs)
 
         _obj._signals = collections.defaultdict(list)
+
+        _data = _obj.p._data
+        if _data is None:
+            _obj._dtarget = _obj.data0
+        elif isinstance(_data, integer_types):
+            _obj._dtarget = _obj.datas[_data]
+        elif isinstance(_data, string_types):
+            _obj._dtarget = _obj.getdatabyname(_data)
+        elif isinstance(_data, bt.LineRoot):
+            _obj._dtarget = _data
+        else:
+            _obj._dtarget = _obj.data0
+
         return _obj, args, kwargs
 
     def dopostinit(cls, _obj, *args, **kwargs):
@@ -860,22 +1094,52 @@ class SignalStrategy(with_metaclass(MetaSigStrategy, Strategy)):
       - ``_concurrent`` (default: ``False``): allow orders to be issued even if
         orders are already pending execution
 
+      - ``_data`` (default: ``None``): if multiple datas are present in the
+        system which is the target for orders. This can be
+
+        - ``None``: The first data in the system will be used
+
+        - An ``int``: indicating the data that was inserted at that position
+
+        - An ``str``: name given to the data when creating it (parameter
+          ``name``) or when adding it cerebro with ``cerebro.adddata(...,
+          name=)``
+
+        - A ``data`` instance
+
     '''
 
     params = (
         ('signals', []),
         ('_accumulate', False),
         ('_concurrent', False),
+        ('_data', None),
     )
 
-    def start(self):
-        self.order = None  # sentinel for order concurrency
+    def _start(self):
+        self._sentinel = None  # sentinel for order concurrency
+        super(SignalStrategy, self)._start()
 
     def signal_add(self, sigtype, signal):
         self._signals[sigtype].append(signal)
 
-    def next(self):
-        if self.order is not None and not self._concurrent:
+    def _notify(self):
+        # Nullify the sentinel if done
+        if self._sentinel is not None:
+            for order in self._orderspending:
+                if order == self._sentinel and not order.alive():
+                    self._sentinel = None
+                    break
+
+        super(SignalStrategy, self)._notify()
+
+    def _next_catch(self):
+        self._next_signal()
+        if hasattr(self, '_next_custom'):
+            self._next_custom()
+
+    def _next_signal(self):
+        if self._sentinel is not None and not self.p._concurrent:
             return  # order active and more than 1 not allowed
 
         sigs = self._signals
@@ -885,11 +1149,25 @@ class SignalStrategy(with_metaclass(MetaSigStrategy, Strategy)):
         ls_long = all(x[0] > 0.0 for x in sigs[bt.SIGNAL_LONGSHORT] or nosig)
         ls_short = all(x[0] < 0.0 for x in sigs[bt.SIGNAL_LONGSHORT] or nosig)
 
-        l_enter = all(x[0] > 0.0 for x in sigs[bt.SIGNAL_LONG] or nosig)
-        s_enter = all(x[0] < 0.0 for x in sigs[bt.SIGNAL_SHORT] or nosig)
+        l_enter0 = all(x[0] > 0.0 for x in sigs[bt.SIGNAL_LONG] or nosig)
+        l_enter1 = all(x[0] < 0.0 for x in sigs[bt.SIGNAL_LONG_INV] or nosig)
+        l_enter2 = all(x[0] for x in sigs[bt.SIGNAL_LONG_ANY] or nosig)
+        l_enter = l_enter0 or l_enter1 or l_enter2
 
-        l_exit = all(x[0] < 0.0 for x in sigs[bt.SIGNAL_LONGEXIT] or nosig)
-        s_exit = all(x[0] > 0.0 for x in sigs[bt.SIGNAL_SHORTEXIT] or nosig)
+        s_enter0 = all(x[0] < 0.0 for x in sigs[bt.SIGNAL_SHORT] or nosig)
+        s_enter1 = all(x[0] > 0.0 for x in sigs[bt.SIGNAL_SHORT_INV] or nosig)
+        s_enter2 = all(x[0] for x in sigs[bt.SIGNAL_SHORT_ANY] or nosig)
+        s_enter = s_enter0 or s_enter1 or s_enter2
+
+        l_ex0 = all(x[0] < 0.0 for x in sigs[bt.SIGNAL_LONGEXIT] or nosig)
+        l_ex1 = all(x[0] > 0.0 for x in sigs[bt.SIGNAL_LONGEXIT_INV] or nosig)
+        l_ex2 = all(x[0] for x in sigs[bt.SIGNAL_LONGEXIT_ANY] or nosig)
+        l_exit = l_ex0 or l_ex1 or l_ex2
+
+        s_ex0 = all(x[0] > 0.0 for x in sigs[bt.SIGNAL_SHORTEXIT] or nosig)
+        s_ex1 = all(x[0] < 0.0 for x in sigs[bt.SIGNAL_SHORTEXIT_INV] or nosig)
+        s_ex2 = all(x[0] for x in sigs[bt.SIGNAL_SHORTEXIT_ANY] or nosig)
+        s_exit = s_ex0 or s_ex1 or s_ex2
 
         # Use oppossite signales to start reversal (by closing)
         # but only if no "xxxExit" exists
@@ -897,8 +1175,15 @@ class SignalStrategy(with_metaclass(MetaSigStrategy, Strategy)):
         s_rev = not self._shortexit and l_enter
 
         # Opposite of individual long and short
-        l_leave = all(x[0] < 0.0 for x in sigs[bt.SIGNAL_LONG] or nosig)
-        s_leave = all(x[0] > 0.0 for x in sigs[bt.SIGNAL_SHORT] or nosig)
+        l_leav0 = all(x[0] < 0.0 for x in sigs[bt.SIGNAL_LONG] or nosig)
+        l_leav1 = all(x[0] > 0.0 for x in sigs[bt.SIGNAL_LONG_INV] or nosig)
+        l_leav2 = all(x[0] for x in sigs[bt.SIGNAL_LONG_ANY] or nosig)
+        l_leave = l_leav0 or l_leav1 or l_leav2
+
+        s_leav0 = all(x[0] > 0.0 for x in sigs[bt.SIGNAL_SHORT] or nosig)
+        s_leav1 = all(x[0] < 0.0 for x in sigs[bt.SIGNAL_SHORT_INV] or nosig)
+        s_leav2 = all(x[0] for x in sigs[bt.SIGNAL_SHORT_ANY] or nosig)
+        s_leave = s_leav0 or s_leav1 or s_leav2
 
         # Invalidate long leave if longexit signals are available
         l_leave = not self._longexit and l_leave
@@ -906,32 +1191,34 @@ class SignalStrategy(with_metaclass(MetaSigStrategy, Strategy)):
         s_leave = not self._shortexit and s_leave
 
         # Take size and start logic
-        size = self.position.size
+        size = self.getposition(self._dtarget).size
         if not size:
             if ls_long or l_enter:
-                self.buy()
+                self._sentinel = self.buy(self._dtarget)
 
             elif ls_short or s_enter:
-                self.sell()
+                self._sentinel = self.sell(self._dtarget)
 
         elif size > 0:  # current long position
             if ls_short or l_exit or l_rev or l_leave:
-                self.close()
+                # closing position - not relevant for concurrency
+                self.close(self._dtarget)
 
             if ls_short or l_rev:
-                self.sell()
+                self._sentinel = self.sell(self._dtarget)
 
             if ls_long or l_enter:
                 if self.p._accumulate:
-                    self.buy()
+                    self._sentinel = self.buy(self._dtarget)
 
         elif size < 0:  # current short position
             if ls_long or s_exit or s_rev or s_leave:
-                self.close()
+                # closing position - not relevant for concurrency
+                self.close(self._dtarget)
 
             if ls_long or s_rev:
-                self.buy()
+                self._sentinel = self.buy(self._dtarget)
 
             if ls_short or s_enter:
                 if self.p._accumulate:
-                    self.sell()
+                    self._sentinel = self.sell(self._dtarget)
